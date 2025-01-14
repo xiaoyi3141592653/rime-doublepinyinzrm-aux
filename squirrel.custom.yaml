@@ -1,0 +1,49 @@
+customization:
+  distribution_code_name: squirrel
+  distribution_version: 0.16.1
+  generator: "Weasel::UIStyleSettings"
+  modified_time: "Tue Sep 10 20:49:21 2024"
+  rime_version: 1.11.2
+patch:
+  "style/color_scheme": google
+  "style/candidate_list_layout": linear 
+  "style/font_face": "苹方-简"
+  "style/font_point": 14
+  "style/label_font_point": 14
+  "app_options/com.apple.Spotlight":
+    ascii_mode: false
+  "app_options/com.alfredapp.Alfred":
+    ascii_mode: false
+  "app_options/com.runningwithcrayons.Alfred-2":
+    ascii_mode: false
+  "app_options/com.blacktree.Quicksilver":
+    ascii_mode: false
+  "app_options/com.apple.Terminal":
+    ascii_mode: false
+    no_inline: true
+  "app_options/com.googlecode.iterm2":
+    ascii_mode: false
+    no_inline: true
+  "app_options/org.vim.MacVim":
+    ascii_mode: false  # 初始爲西文模式
+    no_inline: true   # 不使用行內編輯
+    vim_mode: true    # 退出VIM插入模式自動切換輸入法狀態
+  "app_options/com.apple.dt.Xcode":
+    ascii_mode: false
+  "app_options/com.barebones.textwrangler":
+    ascii_mode: false
+  "app_options/com.macromates.TextMate.preview":
+    ascii_mode: false
+  "app_options/com.github.atom":
+    ascii_mode: false
+  "app_options/com.microsoft.VSCode":
+    ascii_mode: false
+  "app_options/com.sublimetext.2":
+    ascii_mode: false
+  "app_options/org.gnu.Aquamacs":
+    ascii_mode: false
+  "app_options/org.gnu.Emacs":
+    ascii_mode: false
+    no_inline: true
+  "app_options/co.zeit.hyper":
+    ascii_mode: false

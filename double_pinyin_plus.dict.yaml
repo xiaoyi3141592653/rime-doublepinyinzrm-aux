@@ -1,0 +1,16 @@
+---
+name: double_pinyin_plus
+version: "001"
+sort: by_weight
+use_preset_vocabulary: true
+import_tables:
+  - luna_pinyin
+  - double_pinyin_plus.xiaoyi
+  - double_pinyin_plus.shenzhen
+  - double_pinyin_plus.food
+  - double_pinyin_plus.program
+  - double_pinyin_plus.computer
+  - double_pinyin_plus.life
+  - double_pinyin_plus.life_chat
+  - sougou_202409121330
+...

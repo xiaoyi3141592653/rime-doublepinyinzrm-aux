@@ -1,0 +1,9 @@
+patch:
+  engine/filters/+:
+    - lua_filter@*aux_code@ZRM_Aux-code_4.3
+  # 扩充词库
+  translator/enable_encoder: true
+  translator/encode_commit_history: true
+  translator/max_phrase_length: 8
+  translator/enable_user_dict: true
+  translator/enable_sentence: true

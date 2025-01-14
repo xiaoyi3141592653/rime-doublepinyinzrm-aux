@@ -1,0 +1,12 @@
+customization:
+  distribution_code_name: Weasel
+  distribution_version: 0.16.1
+  generator: "Weasel::UIStyleSettings"
+  modified_time: "Tue Sep 24 21:41:44 2024"
+  rime_version: 1.11.2
+patch:
+  "style/color_scheme": google
+  "style/font_face": "微软雅黑"
+  "style/font_point": 12
+  "style/horizontal": true
+  "style/label_font_point": 12
