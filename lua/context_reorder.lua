@@ -123,7 +123,7 @@ function M.func(input, env)
     local boosted = {} -- {i, k, weight}
     for i, cand in ipairs(cands) do
         local text = cand.text
-        if #text >= 6 then -- 至少 2 字
+        if #text >= 3 then -- 至少 1 个汉字（3 字节）
             local key = tail .. "\1" .. text
             local hit = memo[key]
             if hit == nil then

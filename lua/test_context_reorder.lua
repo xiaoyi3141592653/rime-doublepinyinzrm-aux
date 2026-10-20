@@ -98,4 +98,22 @@ end
 assert_eq(#boosted3, 1, "中值+滤波 成词(中值滤波)")
 assert_eq(boosted3[1].k, 2, "成词上下文 k=2")
 
+-- 场景: 已上屏「科学」，候选 yuan → 单字「院」应命中「科学院」
+env.tail = "科学"
+local cands4 = { "院", "元", "原", "圆" }
+local boosted4 = {}
+for i, text in ipairs(cands4) do
+    for k = math.min(env.max_k, utf8.len(env.tail)), 1, -1 do
+        local suffix = env.tail:sub(utf8.offset(env.tail, utf8.len(env.tail) - k + 1) or 1)
+        local w = M.lookup(env, suffix .. text)
+        if w then
+            boosted4[#boosted4 + 1] = { i = i, k = k, w = w }
+            break
+        end
+    end
+end
+assert_eq(#boosted4, 1, "科学+院 成词(科学院)")
+assert_eq(boosted4[1].i, 1, "院 是第1个候选")
+assert_eq(boosted4[1].k, 2, "成词上下文 k=2")
+
 print("\n全部测试通过")
