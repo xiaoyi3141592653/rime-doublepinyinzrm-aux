@@ -10,7 +10,7 @@ local IDX_FILE = "ctx_words.idx"  -- 每行 "首字\tlo\thi"，[lo,hi) 为字节
 
 local TAIL_CHARS = 32 -- 追踪已上屏文字的末尾字数上限
 local MAX_K = 6       -- 跨界成词时最多回看已上屏文字的字数
-local MAX_CANDS = 40  -- 每次最多处理这么多候选，防止极端长句拖慢
+local MAX_CANDS = 100 -- 重排分析窗口：只分析前 N 个候选，窗口外原序放行（不丢弃）
 
 -- 取字符串末尾 n 个 UTF-8 字符
 local function tail_chars(s, n)
@@ -136,10 +136,16 @@ function M.func(input, env)
         return
     end
 
+    -- 只对前 max_cands 个候选做重排分析；窗口外的候选不丢弃，原序放行。
+    -- （本 filter 可能位于 aux_code 之前，后续 filter 仍需见到完整候选流）
     local cands = {}
+    local overflow = false
     for cand in input:iter() do
         cands[#cands + 1] = cand
-        if #cands >= env.max_cands then break end
+        if #cands >= env.max_cands then
+            overflow = true
+            break
+        end
     end
 
     local tail = env.tail
@@ -175,11 +181,6 @@ function M.func(input, env)
     end
     env.memo = memo
 
-    if #boosted == 0 then
-        for _, cand in ipairs(cands) do yield(cand) end
-        return
-    end
-
     -- 排序: 长度匹配优先 → 跨界成词 k 大优先 → 权重高优先 → 原顺序
     -- （长度是强信号: 打 4 字母意图就是 2 字词，不应被 k=1 的弱成词单字压过）
     table.sort(boosted, function(a, b)
@@ -194,6 +195,10 @@ function M.func(input, env)
     for _, b in ipairs(boosted) do yield(cands[b.i]) end
     for i, cand in ipairs(cands) do
         if not boosted_set[i] then yield(cand) end
+    end
+    -- 窗口外的候选继续放行（iter 从上次中断处继续，不会重复）
+    if overflow then
+        for cand in input:iter() do yield(cand) end
     end
 end
 

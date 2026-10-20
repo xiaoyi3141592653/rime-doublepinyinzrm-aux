@@ -4,7 +4,7 @@ patch:
     - lua_filter@*aux_code@ZRM_Aux-code_4.3
   # 上下文重排（数据文件由 lua/build_ctx_words.py 生成）
   context_reorder/max_context: 6
-  context_reorder/max_candidates: 40
+  context_reorder/max_candidates: 100
   # 扩充词库
   translator/enable_encoder: true
   translator/encode_commit_history: true
