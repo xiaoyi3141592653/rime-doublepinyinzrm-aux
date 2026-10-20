@@ -116,4 +116,88 @@ assert_eq(#boosted4, 1, "科学+院 成词(科学院)")
 assert_eq(boosted4[1].i, 1, "院 是第1个候选")
 assert_eq(boosted4[1].k, 2, "成词上下文 k=2")
 
+-- ==== 测试 expected_char_len（辅助码剔除 + 双拼折算）====
+-- 复制 filter 内的折算函数逻辑做独立验证
+local function expected_char_len(input_code, trigger_key)
+    local code = input_code
+    local tk = trigger_key or "'"
+    local tk_pat = tk:gsub("%W", "%%%1")
+    local before = code:match("^([^" .. tk_pat .. "]*)")
+    if before == nil then before = "" end
+    code = before
+    if #code % 2 == 1 then
+        code = code:sub(1, #code - 1)
+    end
+    if #code == 0 then return 0 end
+    return math.floor(#code / 2)
+end
+
+assert_eq(expected_char_len("vsvi", "'"), 2, "vsvi(4字母) 折算 2 字")
+assert_eq(expected_char_len("vsvia", "'"), 2, "vsvia(5字母,末位辅码) 折算 2 字")
+assert_eq(expected_char_len("vsvi'au", "'"), 2, "vsvi'au(引导符+辅码) 折算 2 字")
+assert_eq(expected_char_len("vs", "'"), 1, "vs(2字母) 折算 1 字")
+assert_eq(expected_char_len("vsa", "'"), 1, "vsa(3字母,末位辅码) 折算 1 字")
+assert_eq(expected_char_len("'au", "'"), 0, "纯辅码 折算 0 字")
+assert_eq(expected_char_len("m;", "'"), 1, "m;(万能键) 折算 1 字")
+
+-- ==== 测试排序: 长度匹配优先于权重 ====
+-- 场景: 已上屏「科学」，输入 vsvia(折算2字)，候选「院」(1字) vs「学院」(2字)
+-- 「科学院」k=2 w=105725;「科学学院」不在词库 → 只有「院」命中成词
+-- 构造双命中场景: 已上屏「中值」，输入 vsvi(2字)，候选「定理」(2字,中值定理 w=1050)
+-- vs「滤波」(2字,中值滤波 w=262) → 长度都匹配，权重高的「定理」在前
+env.tail = "中值"
+local cands5 = { "滤波", "定理" }
+local boosted5 = {}
+local expect5 = 2
+for i, text in ipairs(cands5) do
+    for k = math.min(env.max_k, utf8.len(env.tail)), 1, -1 do
+        local suffix = env.tail:sub(utf8.offset(env.tail, utf8.len(env.tail) - k + 1) or 1)
+        local w = M.lookup(env, suffix .. text)
+        if w then
+            local lm = (utf8.len(text) == expect5) and 1 or 0
+            boosted5[#boosted5 + 1] = { i = i, k = k, lm = lm, w = w }
+            break
+        end
+    end
+end
+table.sort(boosted5, function(a, b)
+    if a.k ~= b.k then return a.k > b.k end
+    if a.lm ~= b.lm then return a.lm > b.lm end
+    if a.w ~= b.w then return a.w > b.w end
+    return a.i < b.i
+end)
+assert_eq(boosted5[1].i, 2, "中值+定理(权重1050) 排在 滤波(262) 前")
+
+-- ==== 测试排序: 长度匹配是第一优先级 ====
+-- 场景: 已上屏「理论上」，打 jkuj(折算2字)
+-- 「京」: 上+京 成词(上京 w=8755) 但长度不匹配(1字 vs 2字)
+-- 「经常」: 上+经常 不成词 但长度匹配(2字)
+-- 期望: 「经常」排「京」前
+env.tail = "理论上"
+local cands6 = { "京", "经常", "经济" }
+local boosted6 = {}
+local expect6 = 2
+for i, text in ipairs(cands6) do
+    local lm = (utf8.len(text) == expect6) and 1 or 0
+    local k, w = 0, 0
+    for kk = math.min(env.max_k, utf8.len(env.tail)), 1, -1 do
+        local suffix = env.tail:sub(utf8.offset(env.tail, utf8.len(env.tail) - kk + 1) or 1)
+        local ww = M.lookup(env, suffix .. text)
+        if ww then k, w = kk, ww; break end
+    end
+    if lm == 1 or k > 0 then
+        boosted6[#boosted6 + 1] = { i = i, lm = lm, k = k, w = w }
+    end
+end
+table.sort(boosted6, function(a, b)
+    if a.lm ~= b.lm then return a.lm > b.lm end
+    if a.k ~= b.k then return a.k > b.k end
+    if a.w ~= b.w then return a.w > b.w end
+    return a.i < b.i
+end)
+assert_eq(#boosted6, 3, "理论上场景 3 个候选参与重排")
+assert_eq(boosted6[1].i, 2, "经常(长度匹配) 排 京(仅成词) 前")
+assert_eq(boosted6[2].i, 3, "经济(长度匹配,不成词) 排 京(仅成词) 前")
+assert_eq(boosted6[3].i, 1, "京(仅成词,长度不匹配) 最后")
+
 print("\n全部测试通过")

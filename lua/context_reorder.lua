@@ -29,6 +29,28 @@ local function head_chars(s, n)
     return offset and s:sub(1, offset - 1) or s
 end
 
+-- 计算输入串折算的汉字长度（双拼 2 字母/字），并剔除辅助码部分。
+-- 规则（与 aux_code.lua 对齐）：
+--   1. 含引导符（默认 '）: 引导符之前是双拼码，之后是辅助码 → 长度只算引导符前
+--   2. 无引导符且字母数为奇数: 末位字母是辅助码 → 剔除末位再折算
+--   3. 万能键 ; 等同普通字母参与折算（m; ≡ mm，2 字母 1 字）
+-- 返回: 期望汉字长度（0 表示无法折算，如纯辅助码）
+local function expected_char_len(input_code, trigger_key)
+    local code = input_code
+    -- 剔除引导符及之后的辅助码
+    local tk = trigger_key or "'"
+    local tk_pat = tk:gsub("%W", "%%%1")
+    local before = code:match("^([^" .. tk_pat .. "]*)")
+    if before == nil then before = "" end
+    code = before
+    -- 奇数个字母: 末位是辅助码，剔除
+    if #code % 2 == 1 then
+        code = code:sub(1, #code - 1)
+    end
+    if #code == 0 then return 0 end
+    return math.floor(#code / 2)
+end
+
 function M.init(env)
     env.tail = ""
     env.enabled = false
@@ -36,6 +58,8 @@ function M.init(env)
     local config = env.engine.schema.config
     env.max_k = config:get_int("context_reorder/max_context") or MAX_K
     env.max_cands = config:get_int("context_reorder/max_candidates") or MAX_CANDS
+    -- 辅助码引导符，与 aux_code.lua 共用 key_binder/aux_code_trigger
+    env.trigger_key = config:get_string("key_binder/aux_code_trigger") or "'"
 
     local dir = rime_api.get_user_data_dir() .. "/lua/"
     local wf = io.open(dir .. WORDS_FILE, "r")
@@ -120,10 +144,13 @@ function M.func(input, env)
 
     local tail = env.tail
     local memo = env.memo or {}
-    local boosted = {} -- {i, k, weight}
+    -- 输入折算的期望汉字长度（剔除辅助码后 2 字母/字）
+    local expect_len = expected_char_len(env.engine.context.input, env.trigger_key)
+    local boosted = {} -- {i, len_match, k, weight}
     for i, cand in ipairs(cands) do
         local text = cand.text
         if #text >= 3 then -- 至少 1 个汉字（3 字节）
+            local len_match = (expect_len > 0 and utf8.len(text) == expect_len) and 1 or 0
             local key = tail .. "\1" .. text
             local hit = memo[key]
             if hit == nil then
@@ -138,8 +165,11 @@ function M.func(input, env)
                 hit = best_w and { best_k, best_w } or false
                 memo[key] = hit
             end
-            if hit then
-                boosted[#boosted + 1] = { i = i, k = hit[1], w = hit[2] }
+            -- 长度匹配 或 成词，二者其一即参与重排
+            if len_match == 1 or hit then
+                local k, w = 0, 0
+                if hit then k, w = hit[1], hit[2] end
+                boosted[#boosted + 1] = { i = i, lm = len_match, k = k, w = w }
             end
         end
     end
@@ -150,7 +180,10 @@ function M.func(input, env)
         return
     end
 
+    -- 排序: 长度匹配优先 → 跨界成词 k 大优先 → 权重高优先 → 原顺序
+    -- （长度是强信号: 打 4 字母意图就是 2 字词，不应被 k=1 的弱成词单字压过）
     table.sort(boosted, function(a, b)
+        if a.lm ~= b.lm then return a.lm > b.lm end
         if a.k ~= b.k then return a.k > b.k end
         if a.w ~= b.w then return a.w > b.w end
         return a.i < b.i
