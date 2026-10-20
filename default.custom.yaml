@@ -11,6 +11,8 @@ patch:
     Control_L: noop
     Shift_L: noop
     Shift_R: commit_text
+  "key_binder/bindings/+":
+    - { when: always, accept: Control+space, toggle: ascii_mode }
   menu:
     page_size: 9
   schema_list:

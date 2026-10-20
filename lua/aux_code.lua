@@ -106,6 +106,13 @@ function AuxFilter.readAuxTxt(txtpath)
         if key and value then
             auxCodes[key] = auxCodes[key] or {}
             table.insert(auxCodes[key], value)
+            -- 若辅助码为两个字符，则同时添加反转后的辅助码
+            if #value == 2 then
+                local reversed = value:sub(2, 2) .. value:sub(1, 1)
+                if reversed ~= value then
+                    table.insert(auxCodes[key], reversed)
+                end
+            end
         end
     end
     file:close()
@@ -211,9 +218,13 @@ function AuxFilter.func(input, env)
     local context = env.engine.context
     local inputCode = context.input
     local auxStr = ''
+    local seen = {} -- 去重表
     if not string.find(inputCode, env.trigger_key) and #inputCode % 2 == 0 then
         for cand in input:iter() do
-            yield(cand)
+            if not seen[cand.text] then
+                seen[cand.text] = true
+                yield(cand)
+            end
         end
         return
     else
@@ -232,6 +243,9 @@ function AuxFilter.func(input, env)
         local insertLater = {}
 
         for cand in input:iter() do
+            if seen[cand.text] then goto continue end
+            seen[cand.text] = true
+
             local auxCodes = AuxFilter.aux_code[cand.text] -- 僅單字非 nil
             local fullAuxCodes = AuxFilter.fullAux(env, cand.text)
 
@@ -264,6 +278,7 @@ function AuxFilter.func(input, env)
             else
                 table.insert(insertLater, cand)
             end
+            ::continue::
         end
 
         for _, cand in ipairs(insertLater) do

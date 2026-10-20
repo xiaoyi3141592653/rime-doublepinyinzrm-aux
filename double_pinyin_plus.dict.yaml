@@ -13,4 +13,13 @@ import_tables:
   - double_pinyin_plus.life
   - double_pinyin_plus.life_chat
   - sougou_202409121330
+  - ext
+  - base
+  - tencent
+  - cn_dicts/41448
+  - cn_dicts/8105
+  - cn_dicts/base
+  - cn_dicts/ext
+  - cn_dicts/others
+  - cn_dicts/tencent
 ...

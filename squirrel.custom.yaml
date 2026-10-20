@@ -4,8 +4,37 @@ customization:
   generator: "Weasel::UIStyleSettings"
   modified_time: "Tue Sep 10 20:49:21 2024"
   rime_version: 1.11.2
+
 patch:
-  "style/color_scheme": google
+  preset_color_schemes:
+    wechat:
+      name: "WeChat-keyboard" # 配色取自微信键盘
+      author: zsakvo
+      back_color: 0xDFF0F0F0
+      comment_text_color: 0x999999
+      hilited_candidate_back_color: 0x75B100
+      hilited_candidate_text_color: 0xFFFFFF
+      hilited_mark_color: 0xBF616A # 标签前的标记
+      horizontal: true
+      text_color: 0x424242
+      border_color: 0xFFFFFF
+      # 选中区域配色
+      hilited_candidate_shadow_color: 0xDDDDDD # 阴影
+      # 候选框配色
+      shadow_color: 0xDDDDDD
+    wechat_dark:
+      name: "WeChat-keyboard_dark" # 配色取自微信键盘
+      back_color: 0xDF5D5D5D #设置输入条的背景色，色值是按照 BGR 的形式 16 进制填写
+      border_color: 0x151515 #输入条边框颜色，似乎在横向模式下不起作用
+      border_color_width: 0 #输入条边框宽度
+      candidate_text_color: 0xFFFFFF #候选字颜色
+      text_color: 0xFFFFFF #普通候选字的颜色，非第一候选字
+      hilited_candidate_label_color: 0x151515 #第一候选字标签颜色，也就是数字 1
+      hilited_text_color: 0x151515 #第一候选字颜色
+      hilited_candidate_back_color: 0x75B100 #第一候选字高亮颜色（背景色）
+      # label_color: 0x888888 #普通标签的颜色(非第一候选字)，也就是候选字数字
+      hilited_candidate_shadow_color: 0xDDDDDD # 阴影
+  "style/color_scheme": wechat
   "style/candidate_list_layout": linear 
   "style/font_face": "苹方-简"
   "style/font_point": 14
@@ -19,6 +48,9 @@ patch:
   "app_options/com.blacktree.Quicksilver":
     ascii_mode: false
   "app_options/com.apple.Terminal":
+    ascii_mode: false 
+    no_inline: true
+  "app_options/com.tencent.weterm":
     ascii_mode: false
     no_inline: true
   "app_options/com.googlecode.iterm2":
@@ -30,6 +62,7 @@ patch:
     vim_mode: true    # 退出VIM插入模式自動切換輸入法狀態
   "app_options/com.apple.dt.Xcode":
     ascii_mode: false
+    no_inline: true
   "app_options/com.barebones.textwrangler":
     ascii_mode: false
   "app_options/com.macromates.TextMate.preview":

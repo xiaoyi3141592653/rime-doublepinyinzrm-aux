@@ -49,8 +49,8 @@ engine:
     - uniquifier
 
 speller:
-  alphabet: zyxwvutsrqponmlkjihgfedcba;
-  delimiter: " '"
+  alphabet: "zyxwvutsrqponmlkjihgfedcba;'"
+  delimiter: " \""
   algebra:
     - erase/^xx$/
     - derive/^([jqxy])u$/$1v/
@@ -82,7 +82,9 @@ speller:
     - xform/(.)ou$/$1B/
     - xform/in$/N/
     - xlit/QWRTYUIOPSDFGHMJCKLZXVBN/qwrtyuiopsdfghmjcklzxvbn/
-    #- abbrev/^(.).+$/$1/
+    - derive/^([a-z])\1$/$1;/
+
+
 
 translator:
   dictionary: double_pinyin_plus
@@ -138,10 +140,11 @@ punctuator:
 
 key_binder:
   import_preset: default
+  aux_code_trigger: "'"
   bindings:
     - { when: has_menu, accept: comma, send: Page_Up }
     - { when: has_menu, accept: period, send: Page_Down }
-    - { when: composing, accept: Tab, send: ";" }
+    - { when: composing, accept: Tab, send: "'" }
 
 
 recognizer:
