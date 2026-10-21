@@ -1,0 +1,349 @@
+local DEBUG = false     -- 设为 true 开启调试，false 关闭调试
+local PERF_DEBUG = false -- 设为 true 开启性能调试，false 关闭性能调试
+
+local MyLog, MyFormat, PerfLog
+if DEBUG or PERF_DEBUG then
+    MyFormat = string.format
+else
+    MyFormat = function() return "" end
+end
+
+local sp_map = require("hanzi_shuangpin_data")
+
+if DEBUG then
+    local MyLogFile = io.open("/sdcard/Android/data/org.fcitx.fcitx5.android/files/data/rime/lua/adjacent_corrector.log",
+        "a+")
+    MyLog = function(s)
+        MyLogFile:write(s .. "\n")
+        MyLogFile:flush()
+    end
+else
+    -- 生产环境：空实现，避免任何性能开销
+    MyLog = function() end
+end
+
+if PERF_DEBUG then
+    local PerfLogFile = io.open(
+        "/sdcard/Android/data/org.fcitx.fcitx5.android/files/data/rime/lua/adjacent_corrector_perf.log",
+        "a+")
+    PerfLog = function(s)
+        local timestamp = os.clock() * 1000 -- 毫秒时间戳
+        PerfLogFile:write(string.format("[%.3fms] %s\n", timestamp, s))
+        PerfLogFile:flush()
+    end
+else
+    -- 生产环境：空实现，避免任何性能开销
+    PerfLog = function() end
+end
+
+-- 性能计时器
+local perf_timers = {}
+local function start_timer(name)
+    if PERF_DEBUG then
+        perf_timers[name] = os.clock()
+    end
+end
+
+local function end_timer(name)
+    if PERF_DEBUG and perf_timers[name] then
+        local elapsed = (os.clock() - perf_timers[name]) * 1000 -- 转换为毫秒
+        PerfLog(string.format("TIMER [%s] took %.3fms", name, elapsed))
+        perf_timers[name] = nil
+        return elapsed
+    end
+    return 0
+end
+MyLog("=== adjacent_corrector.lua loaded (hanzi_shuangpin) ===")
+PerfLog("=== adjacent_corrector.lua loaded - performance monitoring started ===")
+
+local M = {}
+
+-- 取脚本目录
+local function get_script_dir()
+    local userPath = rime_api.get_user_data_dir() .. "/lua/"
+    return userPath
+end
+
+-- UTF-8 按字遍历
+local function utf8_iter(str)
+    return tostring(str):gmatch("[\1-\127\194-\244][\128-\191]*")
+end
+
+
+local function get_ch_sp(ch, env)
+    start_timer("get_ch_sp")
+    local map = sp_map
+    local codes = map[ch]
+    if not codes or #codes == 0 then
+        end_timer("get_ch_sp")
+        return nil
+    end
+    end_timer("get_ch_sp")
+    return codes
+end
+
+-- 候选词转双拼（逐字拼接，支持多读音）；返回该词可能的所有拼接结果列表；若任一字缺码返回 nil
+local function word_to_sp(word, env)
+    start_timer("word_to_sp_total")
+    local word_len = 0
+    for _ in utf8_iter(word) do word_len = word_len + 1 end
+    PerfLog(string.format("word_to_sp processing word: %s (length: %d)", word, word_len))
+
+    start_timer("word_to_sp_get_codes")
+    local per_char_codes = {}
+    for ch in utf8_iter(word) do
+        local codes = get_ch_sp(ch, env)
+        if not codes or #codes == 0 then
+            end_timer("word_to_sp_get_codes")
+            end_timer("word_to_sp_total")
+            return nil
+        end
+        per_char_codes[#per_char_codes + 1] = codes
+    end
+    end_timer("word_to_sp_get_codes")
+
+    -- 笛卡尔拼接
+    start_timer("word_to_sp_cartesian")
+    local results = { "" }
+    local combinations_count = 1
+    for i = 1, #per_char_codes do
+        combinations_count = combinations_count * #per_char_codes[i]
+    end
+    PerfLog(string.format("word_to_sp cartesian combinations: %d", combinations_count))
+
+    for i = 1, #per_char_codes do
+        local next_results = {}
+        for _, prefix in ipairs(results) do
+            for _, code in ipairs(per_char_codes[i]) do
+                next_results[#next_results + 1] = prefix .. code
+            end
+        end
+        results = next_results
+    end
+    end_timer("word_to_sp_cartesian")
+
+    MyLog(MyFormat("word_to_sp: %s -> %s", word, table.concat(results, ",")))
+    PerfLog(string.format("word_to_sp result count: %d", #results))
+    end_timer("word_to_sp_total")
+    return results
+end
+
+-- 规范化输入串
+-- 1) 若包含 ' 或 !，只取其前（! 同时是 exact_mode 触发符）
+-- 2) 否则若长度>1且为奇数，去掉最后一个
+local function normalize_input(raw)
+    local s = raw or ""
+    local i = s:find("['!]")
+    if i then
+        return s:sub(1, i - 1)
+    end
+    if #s > 1 and (#s % 2 == 1) then
+        return s:sub(1, #s - 1)
+    end
+    return s
+end
+
+-- 加载映射：每行「汉字 空格 双拼」，同字多读音全部保留为数组
+-- 注意: 此函数已废弃，现在通过 require("hanzi_shuangpin_data") 直接加载
+--[[
+local function load_mapping(path)
+    start_timer("load_mapping_total")
+    PerfLog(string.format("load_mapping starting: %s", path))
+
+    local map, n = {}, 0
+    local f = io.open(path, "r")
+    if not f then
+        MyLog("mapping open failed: " .. path)
+        PerfLog("mapping file open failed")
+        end_timer("load_mapping_total")
+        return map
+    end
+
+    start_timer("load_mapping_parse")
+    local line_count = 0
+    for line in f:lines() do
+        line_count = line_count + 1
+        line = line:gsub("#.*$", "") -- 去注释
+            :gsub("%s+$", "")        -- 去尾空白
+            :gsub("^%s+", "")        -- 去首空白
+        if line ~= "" then
+            -- 捕获首个 UTF-8 字符 + 空白 + 编码
+            local ch, sp = line:match("^([%z\1-\127\194-\244][\128-\191]*)%s+(%S+)$")
+            if ch and sp then
+                if not map[ch] then map[ch] = {} end
+                local exists = false
+                for _, v in ipairs(map[ch]) do
+                    if v == sp then
+                        exists = true; break
+                    end
+                end
+                if not exists then
+                    table.insert(map[ch], sp)
+                    n = n + 1
+                end
+            else
+                MyLog("parse fail: " .. line)
+            end
+        end
+    end
+    f:close()
+    end_timer("load_mapping_parse")
+
+    MyLog(MyFormat("mapping loaded: %d entries from %s", n, path))
+    PerfLog(string.format("load_mapping completed: %d lines processed, %d valid entries", line_count, n))
+    end_timer("load_mapping_total")
+    return map
+end
+--]]
+
+function M.init(env)
+    start_timer("init_total")
+    PerfLog("=== M.init starting ===")
+    env.strict_mode = env.name_space == "strict"
+
+    -- sp_map 已通过 require 在模块加载时初始化，无需再读取文件
+    MyLog(string.format(">>> INIT done (sp_map has %d entries)", 
+        (function() local c = 0; for _ in pairs(sp_map) do c = c + 1 end; return c end)()))
+    
+    end_timer("init_total")
+    PerfLog("=== M.init completed ===")
+end
+
+local function count_chinese_chars_precise(text)
+    start_timer("count_chinese_chars")
+    local count = 0
+    for ch in utf8_iter(text or "") do
+        -- 将UTF-8字符转换为Unicode码点进行判断
+        local unicode = utf8.codepoint(ch)
+        -- 汉字Unicode范围：U+4E00-U+9FFF
+        if unicode >= 0x4E00 and unicode <= 0x9FFF then
+            count = count + 1
+        end
+    end
+    end_timer("count_chinese_chars")
+    return count
+end
+
+function M.func(input, env)
+    start_timer("func_total")
+    PerfLog("=== M.func starting ===")
+
+    start_timer("func_setup")
+    local ctx = env.engine.context
+    local raw = ctx.input or ""
+    -- ! 作为辅助码分隔符之一，同时触发精确匹配模式：
+    -- 仅保留真正匹配的候选，丢弃 14 键派生候选
+    local exact_mode = env.strict_mode or raw:find("!", 1, true) ~= nil
+    if exact_mode then
+        PerfLog("exact_mode enabled (separator '!')"
+        )
+    end
+    local eff = normalize_input(raw)
+    if eff:match("[^a-zA-Z']") then
+        PerfLog(string.format("eff contains non-letter characters (excluding apostrophe): %s, skipping processing", eff))
+        end_timer("func_setup")
+        end_timer("func_total")
+        for cand in input:iter() do
+            yield(cand)
+        end
+        return
+    end
+
+    local preedit = ctx:get_preedit().text or ""
+    MyLog(MyFormat("raw_input=%s eff_input=%s preedit=%s", raw, eff, preedit))
+    local hanzi_cnt = count_chinese_chars_precise(preedit)
+    MyLog(MyFormat("preedit汉字数=%d", hanzi_cnt))
+    PerfLog(string.format("func_setup: raw=%s, eff=%s, hanzi_cnt=%d", raw, eff, hanzi_cnt))
+    end_timer("func_setup")
+
+    -- 非精确模式：直接按原顺序透传，不做分桶 / 不改变候选顺序
+    if not exact_mode then
+        for cand in input:iter() do
+            yield(cand)
+        end
+        end_timer("func_total")
+        PerfLog("=== M.func completed (non-exact passthrough) ===")
+        return
+    end
+
+    -- 精确匹配模式：只保留真正匹配的候选，丢弃派生候选与无映射候选
+    start_timer("func_process_candidates")
+    local exact, exact_with_right_cnt = {}, {}
+    local max_proc_cnt = 100000
+    local proc_cnt = 0
+    local has_seen = {}
+    local exact_count = 0
+    local duplicate_count = 0
+    local expected_cand_len = eff:len() // 2 - hanzi_cnt
+    PerfLog(string.format("Expected candidate length: %d (eff len: %d, hanzi cnt: %d)",
+        expected_cand_len, eff:len(), hanzi_cnt))
+    for cand in input:iter() do
+        proc_cnt = proc_cnt + 1
+        if proc_cnt > max_proc_cnt then
+            PerfLog(string.format("Breaking after processing %d candidates", proc_cnt - 1))
+            break
+        end
+        local cand_len = count_chinese_chars_precise(cand.text)
+        PerfLog(string.format("Processing candidate: %s (length: %d)", cand.text, cand_len))
+        if cand_len <= expected_cand_len and cand_len >= 1 then
+            if has_seen[cand.text] then
+                duplicate_count = duplicate_count + 1
+                MyLog(MyFormat("skip duplicate candidate: %s", cand.text))
+            else
+                has_seen[cand.text] = true
+
+                start_timer("candidate_process")
+                local sp_list = word_to_sp(cand.text, env)
+                if sp_list then
+                    start_timer("exact_match_check")
+                    local is_exact = false
+                    local exact_pos = hanzi_cnt * 2 + 1
+                    for _, sp in ipairs(sp_list) do
+                        if sp == eff or string.find(eff, sp) == exact_pos then
+                            MyLog(MyFormat("text:%s sp:%s, eff:%s", cand.text, sp, eff))
+                            is_exact = true; break
+                        end
+                    end
+                    end_timer("exact_match_check")
+
+                    if is_exact then
+                        exact_count = exact_count + 1
+                        if eff:len() // 2 == cand_len then
+                            table.insert(exact_with_right_cnt, cand)
+                        else
+                            table.insert(exact, cand)
+                        end
+                    end
+                    MyLog(MyFormat("input:%s cand=%s sp_list=%s exact=%s", eff, cand.text,
+                        table.concat(sp_list, ","),
+                        tostring(is_exact)))
+                else
+                    MyLog(MyFormat("cand=%s sp=NONE (drop in exact_mode)", cand.text))
+                end
+                end_timer("candidate_process")
+            end
+        else
+            MyLog(MyFormat("skip candidate (length mismatch): %s", cand.text))
+            PerfLog(MyFormat("skip candidate (length mismatch): %s", cand.text))
+        end
+    end
+    end_timer("func_process_candidates")
+
+    PerfLog(string.format("Candidates processed: %d total, %d duplicates, %d exact",
+        proc_cnt, duplicate_count, exact_count))
+    start_timer("func_output")
+
+    for _, cand in ipairs(exact_with_right_cnt) do yield(cand) end
+    for _, cand in ipairs(exact) do yield(cand) end
+
+    end_timer("func_output")
+
+    end_timer("func_total")
+    PerfLog("=== M.func completed ===")
+end
+
+function M.fini(env)
+    MyLog(">>> FINI")
+end
+
+return M

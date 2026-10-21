@@ -1,0 +1,20 @@
+patch:
+  engine/filters/+:
+    - lua_filter@*adjacent_corrector@x
+    - lua_filter@*aux_code@ZRM_Aux-code_4.3
+    - lua_filter@*context_reorder
+
+  # 扩充词库
+  translator/enable_encoder: true
+  translator/encode_commit_history: true
+  translator/max_phrase_length: 8
+  translator/enable_user_dict: true
+  translator/enable_sentence: true
+  translator/contextual_suggestions: true
+
+  # octagram 语言模型（gram 文件已在 rime 目录）
+  grammar/language: zh-hant-t-essay-bgw
+
+  # 上下文重排（数据文件由 lua/build_ctx_words.py 生成）
+  context_reorder/max_context: 6
+  context_reorder/max_candidates: 100
