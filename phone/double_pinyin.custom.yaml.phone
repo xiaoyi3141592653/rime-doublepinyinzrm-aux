@@ -1,8 +1,8 @@
 patch:
   engine/filters/+:
     - lua_filter@*adjacent_corrector@x
-    - lua_filter@*aux_code@ZRM_Aux-code_4.3
     - lua_filter@*context_reorder
+    - lua_filter@*aux_code@ZRM_Aux-code_4.3
 
   # 扩充词库
   translator/enable_encoder: true
