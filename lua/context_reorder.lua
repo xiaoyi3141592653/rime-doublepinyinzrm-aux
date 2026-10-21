@@ -89,6 +89,24 @@ function M.init(env)
     end
     env.enabled = true
 
+    -- 加载 userdb 自造词（只读，失败不影响主功能）
+    -- key = "拼音码\t词"，提取词文本进 set 表
+    env.user_words = {}
+    local ok = pcall(function()
+        local db = LevelDb("double_pinyin_plus")
+        db:open_read_only()
+        for key, _ in db:query(""):iter() do
+            local word = key:match("\t(.+)$")
+            if word and #word >= 6 then -- 至少 2 字，与主词表口径一致
+                env.user_words[word] = true
+            end
+        end
+        db:close()
+    end)
+    if not ok then
+        env.user_words = nil -- 加载失败，禁用 fallback
+    end
+
     env.notifier = env.engine.context.commit_notifier:connect(function(ctx)
         local text = ctx:get_commit_text()
         if text and text ~= "" then
@@ -99,11 +117,13 @@ function M.init(env)
     end)
 end
 
--- 在词表中查词，返回权重或 nil
+-- 在词表中查词，返回权重或 nil；词表未命中时 fallback 到 userdb 自造词（权重 1）
 function M.lookup(env, word)
     local first = head_chars(word, 1)
     local range = env.idx[first]
-    if not range then return nil end
+    if not range then
+        return env.user_words and env.user_words[word] and 1 or nil
+    end
     local lo, hi = range[1], range[2]
     local words = env.words
     local target = word .. "\t"
@@ -127,7 +147,8 @@ function M.lookup(env, word)
             hi = line_start - 1
         end
     end
-    return nil
+    -- 首字组内未命中，再查 userdb
+    return env.user_words and env.user_words[word] and 1 or nil
 end
 
 function M.func(input, env)
