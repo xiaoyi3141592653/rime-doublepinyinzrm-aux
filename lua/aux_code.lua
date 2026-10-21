@@ -214,6 +214,16 @@ end
 ------------------
 -- filter 主函數 --
 ------------------
+-- 计算当前未上屏部分的输入长度（composition 中最后一个 segment 的范围）
+-- 选词上屏后 ctx.input 仍是完整输入，已选部分不能计入期望词长
+local function active_input_len(context)
+    local comp = context.composition
+    if comp:empty() then return #context.input end
+    local seg = comp:back()
+    -- seg._end 是 UTF-8 字节偏移，输入是纯 ASCII，字节数 == 字符数
+    return seg._end - seg.start
+end
+
 function AuxFilter.func(input, env)
     local context = env.engine.context
     local inputCode = context.input
@@ -269,8 +279,9 @@ function AuxFilter.func(input, env)
                 if string.find(inputCode, env.trigger_key) then
                     yield(cand)
                 else
-                    local expect_cand_len = math.floor(#inputCode / 2)
-                    MyLog(string.format("expect_cand_len:%d", expect_cand_len))
+                    -- 期望词长按未上屏部分算（选词后 ctx.input 仍是完整输入）
+                    local active_len = active_input_len(context)
+                    local expect_cand_len = math.floor(active_len / 2)
                     if (utf8.len(cand.text) <= expect_cand_len) then
                         yield(cand)
                     end
