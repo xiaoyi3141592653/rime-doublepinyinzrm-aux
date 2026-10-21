@@ -11,3 +11,5 @@ patch:
   translator/max_phrase_length: 8
   translator/enable_user_dict: true
   translator/enable_sentence: true
+  # octagram 语言模型（Squirrel 自带 zh-hant-t-essay-bgc.gram / bgw.gram）
+  grammar/language: zh-hant-t-essay-bgw

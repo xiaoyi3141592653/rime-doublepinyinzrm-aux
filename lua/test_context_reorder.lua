@@ -98,23 +98,24 @@ end
 assert_eq(#boosted3, 1, "中值+滤波 成词(中值滤波)")
 assert_eq(boosted3[1].k, 2, "成词上下文 k=2")
 
--- 场景: 已上屏「科学」，候选 yuan → 单字「院」应命中「科学院」
+-- 场景: 已上屏「科学」，候选 yuan → 单字「院」虽成词「科学院」
+-- 但规则要求候选至少 2 字，单字不参与重排（交给 aux_code 处理）
 env.tail = "科学"
 local cands4 = { "院", "元", "原", "圆" }
 local boosted4 = {}
 for i, text in ipairs(cands4) do
-    for k = math.min(env.max_k, utf8.len(env.tail)), 1, -1 do
-        local suffix = env.tail:sub(utf8.offset(env.tail, utf8.len(env.tail) - k + 1) or 1)
-        local w = M.lookup(env, suffix .. text)
-        if w then
-            boosted4[#boosted4 + 1] = { i = i, k = k, w = w }
-            break
+    if #text >= 6 then -- 至少 2 个汉字（6 字节）
+        for k = math.min(env.max_k, utf8.len(env.tail)), 1, -1 do
+            local suffix = env.tail:sub(utf8.offset(env.tail, utf8.len(env.tail) - k + 1) or 1)
+            local w = M.lookup(env, suffix .. text)
+            if w then
+                boosted4[#boosted4 + 1] = { i = i, k = k, w = w }
+                break
+            end
         end
     end
 end
-assert_eq(#boosted4, 1, "科学+院 成词(科学院)")
-assert_eq(boosted4[1].i, 1, "院 是第1个候选")
-assert_eq(boosted4[1].k, 2, "成词上下文 k=2")
+assert_eq(#boosted4, 0, "单字候选(院) 不参与重排")
 
 -- ==== 测试 expected_char_len（辅助码剔除 + 双拼折算）====
 -- 复制 filter 内的折算函数逻辑做独立验证
@@ -170,23 +171,24 @@ assert_eq(boosted5[1].i, 2, "中值+定理(权重1050) 排在 滤波(262) 前")
 
 -- ==== 测试排序: 长度匹配是第一优先级 ====
 -- 场景: 已上屏「理论上」，打 jkuj(折算2字)
--- 「京」: 上+京 成词(上京 w=8755) 但长度不匹配(1字 vs 2字)
--- 「经常」: 上+经常 不成词 但长度匹配(2字)
--- 期望: 「经常」排「京」前
+-- 「京」: 单字，被至少 2 字规则排除，不参与重排
+-- 「经常」「经济」: 长度匹配(2字)，参与重排
 env.tail = "理论上"
 local cands6 = { "京", "经常", "经济" }
 local boosted6 = {}
 local expect6 = 2
 for i, text in ipairs(cands6) do
-    local lm = (utf8.len(text) == expect6) and 1 or 0
-    local k, w = 0, 0
-    for kk = math.min(env.max_k, utf8.len(env.tail)), 1, -1 do
-        local suffix = env.tail:sub(utf8.offset(env.tail, utf8.len(env.tail) - kk + 1) or 1)
-        local ww = M.lookup(env, suffix .. text)
-        if ww then k, w = kk, ww; break end
-    end
-    if lm == 1 or k > 0 then
-        boosted6[#boosted6 + 1] = { i = i, lm = lm, k = k, w = w }
+    if #text >= 6 then -- 至少 2 个汉字（6 字节）
+        local lm = (utf8.len(text) == expect6) and 1 or 0
+        local k, w = 0, 0
+        for kk = math.min(env.max_k, utf8.len(env.tail)), 1, -1 do
+            local suffix = env.tail:sub(utf8.offset(env.tail, utf8.len(env.tail) - kk + 1) or 1)
+            local ww = M.lookup(env, suffix .. text)
+            if ww then k, w = kk, ww; break end
+        end
+        if lm == 1 or k > 0 then
+            boosted6[#boosted6 + 1] = { i = i, lm = lm, k = k, w = w }
+        end
     end
 end
 table.sort(boosted6, function(a, b)
@@ -195,9 +197,8 @@ table.sort(boosted6, function(a, b)
     if a.w ~= b.w then return a.w > b.w end
     return a.i < b.i
 end)
-assert_eq(#boosted6, 3, "理论上场景 3 个候选参与重排")
-assert_eq(boosted6[1].i, 2, "经常(长度匹配) 排 京(仅成词) 前")
-assert_eq(boosted6[2].i, 3, "经济(长度匹配,不成词) 排 京(仅成词) 前")
-assert_eq(boosted6[3].i, 1, "京(仅成词,长度不匹配) 最后")
+assert_eq(#boosted6, 2, "理论上场景 2 个候选参与重排(单字京被排除)")
+assert_eq(boosted6[1].i, 2, "经常(长度匹配) 排第1")
+assert_eq(boosted6[2].i, 3, "经济(长度匹配) 排第2")
 
 print("\n全部测试通过")

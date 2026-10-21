@@ -43,39 +43,59 @@ else
 fi
 [[ ${#DEVICES[@]} -gt 0 ]] || fail "没有已连接的 adb 设备（adb devices 查看）"
 
-# 合并手机端 custom.yaml：在 engine/filters/+ 列表末尾追加 context_reorder，
-# 保留其余全部配置。已注册过则原样保留。
+# 合并手机端 custom.yaml：确保 context_reorder 已注册、grammar/language 已设置。
+# 保留手机端已有 filter（如 adjacent_corrector）与其余全部配置。
 merge_custom_yaml() {
   local src="$1"
-  if grep -q 'lua_filter@\*context_reorder' "$src"; then
+  local grammar_lang="zh-hant-t-essay-bgw"
+  local need_filter=1 need_grammar=1
+  grep -q 'lua_filter@\*context_reorder' "$src" && need_filter=0
+  grep -q "^  grammar/language: $grammar_lang" "$src" && need_grammar=0
+
+  if [[ $need_filter -eq 0 && $need_grammar -eq 0 ]]; then
     cp "$src" "$MERGED"
-    echo "  [info] 手机端已注册 context_reorder，custom.yaml 无需改动"
+    echo "  [info] context_reorder 与 grammar/language 均已配置，custom.yaml 无需改动"
     return 0
   fi
   grep -q '^patch:' "$src" || { echo "  [error] 手机端 custom.yaml 无 patch: 段，请手动合并"; return 1; }
-  awk '
+
+  awk -v need_filter="$need_filter" -v need_grammar="$need_grammar" -v grammar_lang="$grammar_lang" '
     { lines[++n] = $0 }
     /engine\/filters\/\+/ { in_filters = 1; next }
     in_filters {
       if ($0 ~ /^[ \t]*- /) last_filter = n
       else in_filters = 0
     }
+    /^  grammar\/language:/ { grammar_line = n }
     END {
-      if (last_filter == 0) {
+      if (need_filter && last_filter == 0) {
         print "no-filters-block" > "/dev/stderr"
         exit 1
       }
       for (i = 1; i <= n; i++) {
-        print lines[i]
-        if (i == last_filter) print "    - lua_filter@*context_reorder"
+        # 已有 grammar/language 行: 原位替换为 bgw（避免 YAML 重复键）
+        if (grammar_line && i == grammar_line) {
+          print "  grammar/language: " grammar_lang
+        } else {
+          print lines[i]
+        }
+        if (need_filter && i == last_filter) print "    - lua_filter@*context_reorder"
       }
-      print ""
-      print "  # 上下文重排（数据文件由 lua/build_ctx_words.py 生成）"
-      print "  context_reorder/max_context: 6"
-      print "  context_reorder/max_candidates: 40"
+      if (need_filter) {
+        print ""
+        print "  # 上下文重排（数据文件由 lua/build_ctx_words.py 生成）"
+        print "  context_reorder/max_context: 6"
+        print "  context_reorder/max_candidates: 100"
+      }
+      # 无 grammar/language 行时才追加
+      if (need_grammar && !grammar_line) {
+        print ""
+        print "  # octagram 语言模型"
+        print "  grammar/language: " grammar_lang
+      }
     }
   ' "$src" > "$MERGED" || { echo "  [error] 合并失败：custom.yaml 无 engine/filters/+ 列表，请手动合并"; return 1; }
-  echo "  [info] 已合并 context_reorder 到 custom.yaml，差异:"
+  echo "  [info] 已合并，差异:"
   diff "$src" "$MERGED" | sed 's/^/    /'
   return 0
 }
@@ -85,7 +105,7 @@ for serial in "${DEVICES[@]}"; do
   echo "=== 设备 $serial ==="
   tmp="$(mktemp -d)"
 
-  # 拉取手机端 custom.yaml 并合并
+  # 拉取手机端 custom.yaml 并合并（确保 context_reorder + grammar/language）
   if adb -s "$serial" pull "$PHONE_RIME/double_pinyin.custom.yaml" "$tmp/" >/dev/null 2>&1; then
     merge_custom_yaml "$tmp/double_pinyin.custom.yaml" || { FAILED=1; rm -rf "$tmp"; continue; }
   else
@@ -95,7 +115,8 @@ patch:
     - lua_filter@*context_reorder
 
   context_reorder/max_context: 6
-  context_reorder/max_candidates: 40
+  context_reorder/max_candidates: 100
+  grammar/language: zh-hant-t-essay-bgw
 EOF
     echo "  [info] 手机端无 custom.yaml，使用最小模板"
   fi

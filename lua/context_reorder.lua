@@ -155,7 +155,7 @@ function M.func(input, env)
     local boosted = {} -- {i, len_match, k, weight}
     for i, cand in ipairs(cands) do
         local text = cand.text
-        if #text >= 3 then -- 至少 1 个汉字（3 字节）
+        if #text >= 6 then -- 至少 2 个汉字（6 字节），单字不参与重排（交给 aux_code）
             local len_match = (expect_len > 0 and utf8.len(text) == expect_len) and 1 or 0
             local key = tail .. "\1" .. text
             local hit = memo[key]
