@@ -209,6 +209,16 @@ local user_entries = {
 }
 local read_count, disconnect_count = 0, 0
 local fail_user_read = false
+local converter_count = 0
+function env.engine.schema.config:get_string(path)
+    assert_eq(path, "simplifier/opencc_config", "使用简化过滤器的转换配置")
+    return nil
+end
+_G.Opencc = function(config_name)
+    assert_eq(config_name, "t2s.json", "默认使用 Rime 繁转简配置")
+    converter_count = converter_count + 1
+    return {convert = function(_, text) return (text:gsub("還", "还")) end}
+end
 _G.Memory = function(engine, schema, namespace)
     assert_eq(namespace, "translator", "使用当前 translator 的用户词库")
     read_count = read_count + 1
@@ -265,6 +275,30 @@ fail_user_read = true
 env.user_dirty = true
 assert_eq(reorder({"多多", "躲躲"}), "多多,躲躲", "用户库不可用时保持原有排序")
 assert_eq(env.user_error ~= nil, true, "用户库不可用时保留错误原因")
+fail_user_read = false
+user_entries = {
+    {text = "還是", commit_count = 16, weight = -2},
+    {text = "海事", commit_count = 1, weight = -8},
+    {text = "还是", commit_count = 1, weight = -6},
+}
+env.engine.context.input = "hlui"
+env.user_dirty = true
+assert_eq(reorder({"海事", "还是"}), "还是,海事", "繁体還是学习权重用于简体还是候选")
+assert_eq(env.user_words["還是"], -2, "保留繁体原文权重")
+assert_eq(env.user_words["还是"], -2, "繁简权重键冲突时保留最高权重")
+assert_eq(reorder({"海事", "還是"}), "還是,海事", "繁体候选仍能使用学习权重")
+user_entries = {
+    {text = "今天還是", commit_count = 16, weight = -2},
+    {text = "今天海事", commit_count = 1, weight = -8},
+}
+env.user_dirty = true
+assert_eq(reorder({"海事", "还是"}), "还是,海事", "跨界成词同样匹配繁体用户记录")
+user_entries = {{text = "還是", commit_count = -16, weight = -2}}
+env.user_dirty = true
+reorder({"海事", "还是"})
+assert_eq(env.user_words["还是"], nil, "刷新后移除已删除词的简体权重键")
+assert_eq(converter_count, 1, "刷新权重时复用 OpenCC 转换器")
 _G.Memory = nil
+_G.Opencc = nil
 
 print("\n全部测试通过")

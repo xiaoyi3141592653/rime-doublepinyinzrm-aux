@@ -57,12 +57,22 @@ function M.refresh_user_weights(env)
     local memory
     local weights = {}
     local ok, err = pcall(function()
+        local opencc = rawget(_G, "Opencc")
+        if opencc and not env.user_converter then
+            local config = env.engine.schema.config
+            env.user_converter = assert(opencc(config:get_string("simplifier/opencc_config") or "t2s.json"),
+                "user weight OpenCC converter unavailable")
+        end
         memory = Memory(env.engine, env.engine.schema, "translator")
         local dictionary = memory.user_dict
         assert(dictionary and dictionary.loaded, "user dictionary unavailable")
         for entry in dictionary:lookup_words("", true, 0):iter() do
             if entry.commit_count > 0 and #entry.text >= 6 then
                 weights[entry.text] = math.max(weights[entry.text] or -math.huge, entry.weight)
+                if env.user_converter then
+                    local converted = env.user_converter:convert(entry.text)
+                    weights[converted] = math.max(weights[converted] or -math.huge, entry.weight)
+                end
             end
         end
     end)
