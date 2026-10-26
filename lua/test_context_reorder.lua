@@ -201,4 +201,70 @@ assert_eq(#boosted6, 2, "理论上场景 2 个候选参与重排(单字京被排
 assert_eq(boosted6[1].i, 2, "经常(长度匹配) 排第1")
 assert_eq(boosted6[2].i, 3, "经济(长度匹配) 排第2")
 
+local user_entries = {
+    {text = "躲躲", commit_count = 6, weight = -2},
+    {text = "躲躲", commit_count = 1, weight = -8},
+    {text = "多多", commit_count = 1, weight = -5},
+    {text = "删除词", commit_count = -1, weight = 10},
+}
+local read_count, disconnect_count = 0, 0
+local fail_user_read = false
+_G.Memory = function(engine, schema, namespace)
+    assert_eq(namespace, "translator", "使用当前 translator 的用户词库")
+    read_count = read_count + 1
+    return {
+        user_dict = {
+            loaded = not fail_user_read,
+            lookup_words = function(_, code, predictive, limit)
+                assert(code == "" and predictive and limit == 0)
+                return {iter = function()
+                    local position = 0
+                    return function()
+                        position = position + 1
+                        return user_entries[position]
+                    end
+                end}
+            end,
+        },
+        disconnect = function() disconnect_count = disconnect_count + 1 end,
+    }
+end
+local function reorder(texts)
+    local position, output = 0, {}
+    local previous_yield = _G.yield
+    _G.yield = function(candidate) output[#output + 1] = candidate.text end
+    M.func({iter = function() return function()
+        position = position + 1
+        if texts[position] then return {text = texts[position]} end
+    end end}, env)
+    _G.yield = previous_yield
+    return table.concat(output, ",")
+end
+env.engine.context = {input = "dodo"}
+env.tail = "今天"
+env.user_dirty = true
+assert_eq(reorder({"多多", "躲躲"}), "躲躲,多多", "今天后按候选学习权重提升躲躲")
+assert_eq(env.user_words["躲躲"], -2, "同文本多编码取最高动态权重")
+assert_eq(env.user_words["删除词"], nil, "删除记录不参与学习权重")
+assert_eq(disconnect_count, 1, "查询结束释放 Memory")
+reorder({"多多", "躲躲"})
+assert_eq(read_count, 1, "输入期间复用学习权重快照")
+user_entries[3].weight = -1
+env.user_dirty = true
+assert_eq(reorder({"躲躲", "多多"}), "多多,躲躲", "学习后刷新动态权重")
+user_entries = {
+    {text = "今天躲躲", commit_count = 2, weight = -3},
+    {text = "今天多多", commit_count = 1, weight = -6},
+}
+env.user_dirty = true
+assert_eq(reorder({"多多", "躲躲"}), "躲躲,多多", "跨界用户词按真实学习权重排序")
+env.max_cands = 1
+assert_eq(reorder({"多多", "躲躲", "朵朵"}), "多多,躲躲,朵朵", "重排窗口外候选完整保留")
+env.max_cands = 100
+fail_user_read = true
+env.user_dirty = true
+assert_eq(reorder({"多多", "躲躲"}), "多多,躲躲", "用户库不可用时保持原有排序")
+assert_eq(env.user_error ~= nil, true, "用户库不可用时保留错误原因")
+_G.Memory = nil
+
 print("\n全部测试通过")

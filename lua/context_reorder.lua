@@ -1,6 +1,6 @@
 -- context_reorder.lua
 -- 上下文重排 filter：候选若能与本 session 已上屏文字的末尾组成词库中的词，则置前。
--- 排序依据：跨界成词的上下文长度 k 优先，其次词库权重，最后保持原顺序。
+-- 排序依据：长度、上下文长度、上下文学习权重、静态权重、候选学习权重、原顺序。
 -- 数据文件由 build_ctx_words.py 预编译生成（词库变更后重跑该脚本）。
 
 local M = {}
@@ -51,6 +51,31 @@ local function expected_char_len(input_code, trigger_key)
     return math.floor(#code / 2)
 end
 
+function M.refresh_user_weights(env)
+    if not env.user_dirty then return end
+    env.user_dirty = false
+    local memory
+    local weights = {}
+    local ok, err = pcall(function()
+        memory = Memory(env.engine, env.engine.schema, "translator")
+        local dictionary = memory.user_dict
+        assert(dictionary and dictionary.loaded, "user dictionary unavailable")
+        for entry in dictionary:lookup_words("", true, 0):iter() do
+            if entry.commit_count > 0 and #entry.text >= 6 then
+                weights[entry.text] = math.max(weights[entry.text] or -math.huge, entry.weight)
+            end
+        end
+    end)
+    if memory then memory:disconnect() end
+    env.user_words = ok and weights or nil
+    env.user_error = not ok and tostring(err) or nil
+    env.memo = nil
+    local rime_log = rawget(_G, "log")
+    if not ok and rime_log then
+        rime_log.warning("context_reorder: cannot read user weights: " .. tostring(err))
+    end
+end
+
 function M.init(env)
     env.tail = ""
     env.enabled = false
@@ -89,23 +114,7 @@ function M.init(env)
     end
     env.enabled = true
 
-    -- 加载 userdb 自造词（只读，失败不影响主功能）
-    -- key = "拼音码\t词"，提取词文本进 set 表
-    env.user_words = {}
-    local ok = pcall(function()
-        local db = LevelDb("double_pinyin_plus")
-        db:open_read_only()
-        for key, _ in db:query(""):iter() do
-            local word = key:match("\t(.+)$")
-            if word and #word >= 6 then -- 至少 2 字，与主词表口径一致
-                env.user_words[word] = true
-            end
-        end
-        db:close()
-    end)
-    if not ok then
-        env.user_words = nil -- 加载失败，禁用 fallback
-    end
+    env.user_dirty = true
 
     env.notifier = env.engine.context.commit_notifier:connect(function(ctx)
         local text = ctx:get_commit_text()
@@ -113,7 +122,11 @@ function M.init(env)
             env.tail = (env.tail .. text):sub(-TAIL_CHARS * 4) -- 4 字节/字上限截断
             env.tail = tail_chars(env.tail, TAIL_CHARS)
             env.memo = nil -- 上屏后清空查询缓存
+            env.user_dirty = true
         end
+    end)
+    env.delete_notifier = env.engine.context.delete_notifier:connect(function()
+        env.user_dirty = true
     end)
 end
 
@@ -157,6 +170,8 @@ function M.func(input, env)
         return
     end
 
+    M.refresh_user_weights(env)
+
     -- 只对前 max_cands 个候选做重排分析；窗口外的候选不丢弃，原序放行。
     -- （本 filter 可能位于 aux_code 之前，后续 filter 仍需见到完整候选流）
     local cands = {}
@@ -196,18 +211,29 @@ function M.func(input, env)
             if len_match == 1 or hit then
                 local k, w = 0, 0
                 if hit then k, w = hit[1], hit[2] end
-                boosted[#boosted + 1] = { i = i, lm = len_match, k = k, w = w }
+                local context_weight = -math.huge
+                local candidate_weight = -math.huge
+                if env.user_words then
+                    if k > 0 then
+                        context_weight = env.user_words[tail_chars(tail, k) .. text] or -math.huge
+                    end
+                    candidate_weight = env.user_words[text] or -math.huge
+                end
+                boosted[#boosted + 1] = {
+                    i = i, lm = len_match, k = k, w = w,
+                    context_weight = context_weight, candidate_weight = candidate_weight,
+                }
             end
         end
     end
     env.memo = memo
 
-    -- 排序: 长度匹配优先 → 跨界成词 k 大优先 → 权重高优先 → 原顺序
-    -- （长度是强信号: 打 4 字母意图就是 2 字词，不应被 k=1 的弱成词单字压过）
     table.sort(boosted, function(a, b)
         if a.lm ~= b.lm then return a.lm > b.lm end
         if a.k ~= b.k then return a.k > b.k end
+        if a.context_weight ~= b.context_weight then return a.context_weight > b.context_weight end
         if a.w ~= b.w then return a.w > b.w end
+        if a.candidate_weight ~= b.candidate_weight then return a.candidate_weight > b.candidate_weight end
         return a.i < b.i
     end)
 
@@ -225,6 +251,7 @@ end
 
 function M.fini(env)
     if env.notifier then env.notifier:disconnect() end
+    if env.delete_notifier then env.delete_notifier:disconnect() end
 end
 
 return M
