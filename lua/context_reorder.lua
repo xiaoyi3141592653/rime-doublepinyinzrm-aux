@@ -11,6 +11,9 @@ local IDX_FILE = "ctx_words.idx"  -- 每行 "首字\tlo\thi"，[lo,hi) 为字节
 local TAIL_CHARS = 32 -- 追踪已上屏文字的末尾字数上限
 local MAX_K = 6       -- 跨界成词时最多回看已上屏文字的字数
 local MAX_CANDS = 100 -- 重排分析窗口：只分析前 N 个候选，窗口外原序放行（不丢弃）
+local MAX_USER_RECORDS = 128
+local MAX_QUERY_CACHE = 256
+local MAX_CONVERT_CACHE = 4096
 
 -- 取字符串末尾 n 个 UTF-8 字符
 local function tail_chars(s, n)
@@ -51,39 +54,170 @@ local function expected_char_len(input_code, trigger_key)
     return math.floor(#code / 2)
 end
 
-function M.refresh_user_weights(env)
-    if not env.user_dirty then return end
-    env.user_dirty = false
-    local memory
-    local weights = {}
-    local ok, err = pcall(function()
-        local opencc = rawget(_G, "Opencc")
-        if opencc and not env.user_converter then
-            local config = env.engine.schema.config
-            env.user_converter = assert(opencc(config:get_string("simplifier/opencc_config") or "t2s.json"),
-                "user weight OpenCC converter unavailable")
+local function user_memory(env)
+    if not env.user_memory then
+        env.user_memory = Memory(env.engine, env.engine.schema, "translator")
+        assert(env.user_memory.user_dict and env.user_memory.user_dict.loaded,
+            "user dictionary unavailable")
+        env.user_dictionary = env.user_memory.user_dict
+        env.user_decoder = env.user_memory.dict
+    end
+    return env.user_dictionary
+end
+
+local function release_user_memory(env)
+    env.user_dictionary, env.user_decoder = nil, nil
+    if env.user_memory then env.user_memory:disconnect() end
+    env.user_memory = nil
+end
+
+local function candidate_codes(env, candidate)
+    local codes, seen = {}, {}
+    if not candidate.get_genuines then return codes end
+    for _, genuine in ipairs(candidate:get_genuines()) do
+        local phrase = genuine:to_phrase()
+        if phrase then
+            local code = phrase.entry.custom_code
+            if not code or code == "" then
+                env.code_cache = env.code_cache or {}
+                local numeric_code = phrase.code
+                local cache_key = numeric_code:print()
+                code = env.code_cache[cache_key]
+                if not code then
+                    user_memory(env)
+                    code = table.concat(env.user_memory:decode(numeric_code), " ")
+                    if (env.code_count or 0) >= MAX_QUERY_CACHE then
+                        env.code_cache, env.code_count = {}, 0
+                    end
+                    env.code_cache[cache_key] = code
+                    env.code_count = (env.code_count or 0) + 1
+                end
+            end
+            code = code:gsub("%s+$", "")
+            if code ~= "" and not seen[code] then
+                seen[code] = true
+                codes[#codes + 1] = code
+            end
         end
-        memory = Memory(env.engine, env.engine.schema, "translator")
-        local dictionary = memory.user_dict
-        assert(dictionary and dictionary.loaded, "user dictionary unavailable")
-        for entry in dictionary:lookup_words("", true, 0):iter() do
+    end
+    return codes
+end
+
+local function converted_word(env, text)
+    env.convert_cache = env.convert_cache or {}
+    if env.convert_cache[text] then return env.convert_cache[text] end
+    if not env.user_converter then
+        local opencc = rawget(_G, "Opencc")
+        if not opencc then return text end
+        env.user_converter = assert(opencc(env.engine.schema.config:get_string("simplifier/opencc_config")
+            or "t2s.json"), "user weight OpenCC converter unavailable")
+    end
+    local converted = env.user_converter:convert(text)
+    if (env.convert_count or 0) >= MAX_CONVERT_CACHE then
+        env.convert_cache, env.convert_count = {}, 0
+    end
+    env.convert_cache[text] = converted
+    env.convert_count = (env.convert_count or 0) + 1
+    return converted
+end
+
+local function query_user_code(env, code)
+    if code == "" then return end
+    local weights = env.user_queries[code]
+    if not weights then
+        weights = {}
+        local dictionary = user_memory(env)
+        for entry in dictionary:lookup_words(code .. " \t", true, MAX_USER_RECORDS):iter() do
             if entry.commit_count > 0 and #entry.text >= 6 then
+                local converted = converted_word(env, entry.text)
                 weights[entry.text] = math.max(weights[entry.text] or -math.huge, entry.weight)
-                if env.user_converter then
-                    local converted = env.user_converter:convert(entry.text)
-                    weights[converted] = math.max(weights[converted] or -math.huge, entry.weight)
+                weights[converted] = math.max(weights[converted] or -math.huge, entry.weight)
+            end
+        end
+        if env.query_count >= MAX_QUERY_CACHE then
+            env.user_queries, env.query_count = {}, 0
+        end
+        env.user_queries[code] = weights
+        env.query_count = env.query_count + 1
+    end
+    for text, weight in pairs(weights) do
+        env.user_words[text] = math.max(env.user_words[text] or -math.huge, weight)
+    end
+end
+
+function M.refresh_user_weights(env, candidates)
+    if env.user_dirty or not env.user_queries then
+        release_user_memory(env)
+        env.user_queries, env.query_count = {}, 0
+        env.user_dirty, env.user_error = false, nil
+        env.memo = nil
+    end
+    local previous_words = env.user_words or {}
+    env.user_words = {}
+    if env.user_error then return end
+    local ok, err = pcall(function()
+        for _, candidate in ipairs(candidates) do
+            if #candidate.text >= 6 then
+                for _, code in ipairs(candidate_codes(env, candidate)) do
+                    query_user_code(env, code)
+                    local context_code = code
+                    local tail_codes = env.tail_codes or {}
+                    for count = 1, math.min(env.max_k, #tail_codes) do
+                        local syllable = tail_codes[#tail_codes - count + 1]
+                        if not syllable then break end
+                        context_code = syllable .. " " .. context_code
+                        query_user_code(env, context_code)
+                    end
                 end
             end
         end
     end)
-    if memory then memory:disconnect() end
-    env.user_words = ok and weights or nil
-    env.user_error = not ok and tostring(err) or nil
-    env.memo = nil
-    local rime_log = rawget(_G, "log")
-    if not ok and rime_log then
-        rime_log.warning("context_reorder: cannot read user weights: " .. tostring(err))
+    release_user_memory(env)
+    if not ok then
+        env.user_words = {}
+        env.user_error = tostring(err)
+        local rime_log = rawget(_G, "log")
+        if rime_log then
+            rime_log.warning("context_reorder: cannot read user weights: " .. tostring(err))
+        end
     end
+    for text, weight in pairs(previous_words) do
+        if env.user_words[text] ~= weight then env.memo = nil; break end
+    end
+    for text, weight in pairs(env.user_words) do
+        if previous_words[text] ~= weight then env.memo = nil; break end
+    end
+end
+
+function M.record_commit(env, ctx)
+    local text = ctx:get_commit_text()
+    if not text or text == "" then return end
+    local committed_codes, committed_text = {}, {}
+    local ok = pcall(function()
+        for _, segment in ipairs(ctx.composition:get_segments()) do
+            local candidate = segment:get_selected_candidate()
+            if not candidate then error("missing committed candidate") end
+            committed_text[#committed_text + 1] = candidate.text
+            local code = candidate_codes(env, candidate)[1] or ""
+            local syllables = {}
+            for syllable in code:gmatch("%S+") do syllables[#syllables + 1] = syllable end
+            for position = 1, utf8.len(candidate.text) do
+                committed_codes[#committed_codes + 1] =
+                    (#syllables == utf8.len(candidate.text)) and syllables[position] or false
+            end
+        end
+    end)
+    release_user_memory(env)
+    if not ok or table.concat(committed_text) ~= text then
+        committed_codes = {}
+        for position = 1, utf8.len(text) do committed_codes[position] = false end
+    end
+    local tail_codes = env.tail_codes or {}
+    for _, code in ipairs(committed_codes) do tail_codes[#tail_codes + 1] = code end
+    while #tail_codes > TAIL_CHARS do table.remove(tail_codes, 1) end
+    env.tail_codes = tail_codes
+    env.tail = tail_chars(env.tail .. text, TAIL_CHARS)
+    env.memo, env.user_dirty = nil, true
 end
 
 function M.init(env)
@@ -126,14 +260,9 @@ function M.init(env)
 
     env.user_dirty = true
 
+    env.tail_codes = {}
     env.notifier = env.engine.context.commit_notifier:connect(function(ctx)
-        local text = ctx:get_commit_text()
-        if text and text ~= "" then
-            env.tail = (env.tail .. text):sub(-TAIL_CHARS * 4) -- 4 字节/字上限截断
-            env.tail = tail_chars(env.tail, TAIL_CHARS)
-            env.memo = nil -- 上屏后清空查询缓存
-            env.user_dirty = true
-        end
+        M.record_commit(env, ctx)
     end)
     env.delete_notifier = env.engine.context.delete_notifier:connect(function()
         env.user_dirty = true
@@ -180,8 +309,6 @@ function M.func(input, env)
         return
     end
 
-    M.refresh_user_weights(env)
-
     -- 只对前 max_cands 个候选做重排分析；窗口外的候选不丢弃，原序放行。
     -- （本 filter 可能位于 aux_code 之前，后续 filter 仍需见到完整候选流）
     local cands = {}
@@ -193,6 +320,8 @@ function M.func(input, env)
             break
         end
     end
+
+    M.refresh_user_weights(env, cands)
 
     local tail = env.tail
     local memo = env.memo or {}
@@ -262,6 +391,7 @@ end
 function M.fini(env)
     if env.notifier then env.notifier:disconnect() end
     if env.delete_notifier then env.delete_notifier:disconnect() end
+    release_user_memory(env)
 end
 
 return M

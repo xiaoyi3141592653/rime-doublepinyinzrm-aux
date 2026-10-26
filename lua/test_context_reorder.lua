@@ -207,7 +207,7 @@ local user_entries = {
     {text = "多多", commit_count = 1, weight = -5},
     {text = "删除词", commit_count = -1, weight = 10},
 }
-local read_count, disconnect_count = 0, 0
+local read_count, disconnect_count, query_count, convert_count = 0, 0, 0, 0
 local fail_user_read = false
 local converter_count = 0
 function env.engine.schema.config:get_string(path)
@@ -217,26 +217,62 @@ end
 _G.Opencc = function(config_name)
     assert_eq(config_name, "t2s.json", "默认使用 Rime 繁转简配置")
     converter_count = converter_count + 1
-    return {convert = function(_, text) return (text:gsub("還", "还")) end}
+    return {convert = function(_, text)
+        convert_count = convert_count + 1
+        return (text:gsub("還", "还"))
+    end}
+end
+local text_codes = {
+    ["躲躲"] = "duo duo", ["多多"] = "duo duo", ["朵朵"] = "duo duo",
+    ["還是"] = "hai shi", ["还是"] = "hai shi", ["海事"] = "hai shi",
+    ["今天"] = "jin tian", ["今天躲躲"] = "jin tian duo duo",
+    ["今天多多"] = "jin tian duo duo", ["今天還是"] = "jin tian hai shi",
+    ["今天海事"] = "jin tian hai shi",
+}
+local function mock_candidate(text)
+    return {text = text, get_genuines = function()
+        return {{to_phrase = function()
+            return {entry = {custom_code = text_codes[text] or "unknown"}}
+        end}}
+    end}
 end
 _G.Memory = function(engine, schema, namespace)
     assert_eq(namespace, "translator", "使用当前 translator 的用户词库")
     read_count = read_count + 1
+    local alive = true
     return {
+        decode = function(_, code)
+            assert(alive, "禁止 Memory 释放后解码")
+            return code.syllables
+        end,
         user_dict = {
             loaded = not fail_user_read,
             lookup_words = function(_, code, predictive, limit)
-                assert(code == "" and predictive and limit == 0)
+                assert(alive, "禁止 Memory 释放后访问词典")
+                assert(code ~= "", "禁止空编码全库扫描")
+                assert(code:sub(-2) == " \t", "必须精确到完整编码和词文本分隔符")
+                assert(predictive and limit == 128, "同编码记录查询必须有上限")
+                query_count = query_count + 1
+                local matching = {}
+                for _, entry in ipairs(user_entries) do
+                    if (text_codes[entry.text] or "unknown") .. " \t" == code then
+                        matching[#matching + 1] = entry
+                    end
+                end
                 return {iter = function()
                     local position = 0
                     return function()
+                        assert(alive, "禁止 Memory 释放后遍历词典")
                         position = position + 1
-                        return user_entries[position]
+                        return matching[position]
                     end
                 end}
             end,
         },
-        disconnect = function() disconnect_count = disconnect_count + 1 end,
+        disconnect = function()
+            alive = false
+            disconnect_count = disconnect_count + 1
+        end,
     }
 end
 local function reorder(texts)
@@ -245,20 +281,27 @@ local function reorder(texts)
     _G.yield = function(candidate) output[#output + 1] = candidate.text end
     M.func({iter = function() return function()
         position = position + 1
-        if texts[position] then return {text = texts[position]} end
+        if texts[position] then return mock_candidate(texts[position]) end
     end end}, env)
     _G.yield = previous_yield
     return table.concat(output, ",")
 end
 env.engine.context = {input = "dodo"}
 env.tail = "今天"
+env.tail_codes = {"jin", "tian"}
 env.user_dirty = true
 assert_eq(reorder({"多多", "躲躲"}), "躲躲,多多", "今天后按候选学习权重提升躲躲")
 assert_eq(env.user_words["躲躲"], -2, "同文本多编码取最高动态权重")
 assert_eq(env.user_words["删除词"], nil, "删除记录不参与学习权重")
-assert_eq(disconnect_count, 1, "查询结束释放 Memory")
+assert_eq(disconnect_count, 1, "完成本轮查询后才释放 Memory")
+local previous_queries, previous_conversions = query_count, convert_count
+local previous_memo = env.memo
 reorder({"多多", "躲躲"})
 assert_eq(read_count, 1, "输入期间复用学习权重快照")
+assert_eq(query_count, previous_queries, "同音候选和重复输入不重复查询")
+assert_eq(convert_count, previous_conversions, "缓存命中时不重复转换")
+assert_eq(env.memo, previous_memo, "权重不变时复用上下文查词缓存")
+assert_eq(query_count, 3, "只查询候选编码及两个上文后缀编码")
 user_entries[3].weight = -1
 env.user_dirty = true
 assert_eq(reorder({"躲躲", "多多"}), "多多,躲躲", "学习后刷新动态权重")
@@ -298,6 +341,42 @@ env.user_dirty = true
 reorder({"海事", "还是"})
 assert_eq(env.user_words["还是"], nil, "刷新后移除已删除词的简体权重键")
 assert_eq(converter_count, 1, "刷新权重时复用 OpenCC 转换器")
+user_entries = {{text = "還是", commit_count = 16, weight = -2}}
+env.user_dirty = true
+local before_refresh_conversions = convert_count
+reorder({"海事", "还是"})
+assert_eq(convert_count, before_refresh_conversions, "学习失效不清除繁简转换缓存")
+local commit_context = {
+    get_commit_text = function() return "今天" end,
+    composition = {get_segments = function() return {
+        {get_selected_candidate = function() return mock_candidate("今天") end},
+    } end},
+}
+M.record_commit(env, commit_context)
+assert_eq(env.tail_codes[#env.tail_codes], "tian", "上屏记录真实末字编码")
+assert_eq(env.user_dirty, true, "上屏使权重查询缓存失效")
+env.user_dirty = true
+env.tail_codes = {}
+local before_no_context = query_count
+reorder({"海事", "还是"})
+assert_eq(query_count - before_no_context, 1, "上文无编码时只查询候选，不退回全库扫描")
+local before_no_code = query_count
+M.refresh_user_weights(env, {{text = "无编码"}})
+assert_eq(query_count, before_no_code, "无原始候选编码时不查询用户库")
+env.user_dirty = true
+local decoded_candidate = {text = "还是", get_genuines = function() return {
+    {to_phrase = function() return {entry = {custom_code = ""}, code = {
+        syllables = {"hai", "shi"}, print = function() return "123 456" end,
+    }} end},
+} end}
+M.refresh_user_weights(env, {decoded_candidate})
+assert_eq(env.user_words["还是"], -2, "从候选数字编码解码后精确查询学习权重")
+assert_eq(env.user_dictionary, nil, "查询后不保留非持有型词典句柄")
+local before_cached_decode = read_count
+M.refresh_user_weights(env, {decoded_candidate})
+assert_eq(read_count, before_cached_decode, "编码和权重均命中缓存时不创建 Memory")
+M.fini(env)
+assert_eq(env.user_memory, nil, "结束时释放查询句柄")
 _G.Memory = nil
 _G.Opencc = nil
 
